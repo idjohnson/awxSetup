@@ -1,0 +1,95 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-awx-inventory-job
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      containers:
+      - name: create-awx-inventory
+        image: alpine:latest
+        env:
+        # --- Configuration for the Organization to find ---
+        - name: ORG_NAME
+          value: "Freshbrewed"
+
+        # --- Configuration for the Inventory to create ---
+        - name: INVENTORY_NAME
+          value: "Kubernetes-Cluster1"
+
+        # --- Configuration for Host 1 ---
+        - name: HOST1_NAME
+          value: "builder-hp-elitebook-745-g5"
+        - name: HOST1_IP
+          value: "192.168.1.33"
+
+        # --- Configuration for Host 2 ---
+        - name: HOST2_NAME
+          value: "builder-hp-elitebook-850-g1"
+        - name: HOST2_IP
+          value: "192.168.1.36"
+
+        # --- AWX API Connection Details ---
+        - name: AWX_API_URL
+          value: "http://awx-service.default.svc:80"
+        - name: AWX_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-admin-password
+              key: password
+
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Exit on error, print commands
+          set -ex
+
+          echo "Installing dependencies..."
+          apk add --no-cache curl jq
+
+          # 1. FETCH ORGANIZATION ID
+          echo "Fetching ID for organization: ${ORG_NAME}"
+          ORG_ID=$(curl -k -f -s -u "admin:${AWX_ADMIN_PASSWORD}" "${AWX_API_URL}/api/v2/organizations/?name=${ORG_NAME}" | jq '.results[0].id')
+
+          if [ -z "$ORG_ID" ] || [ "$ORG_ID" == "null" ]; then
+            echo "Error: Could not find organization with name '${ORG_NAME}'"
+            exit 1
+          fi
+          echo "Found Organization ID: ${ORG_ID}"
+
+          # 2. CREATE INVENTORY AND CAPTURE ITS ID
+          echo "Creating inventory: ${INVENTORY_NAME}"
+          INVENTORY_PAYLOAD="{\"name\": \"${INVENTORY_NAME}\", \"organization\": ${ORG_ID}}"
+          INVENTORY_ID=$(curl -k -f -s -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${INVENTORY_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/" | jq '.id')
+
+          if [ -z "$INVENTORY_ID" ] || [ "$INVENTORY_ID" == "null" ]; then
+            echo "Error: Failed to create inventory '${INVENTORY_NAME}' or could not parse its ID."
+            exit 1
+          fi
+          echo "Successfully created inventory with ID: ${INVENTORY_ID}"
+
+          # 3. ADD HOST 1 TO THE NEW INVENTORY
+          echo "Adding host '${HOST1_NAME}' to inventory ID ${INVENTORY_ID}"
+          HOST1_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${HOST1_NAME}",
+            "variables": "ansible_host: ${HOST1_IP}\nansible_connection: ssh"
+          }
+          EOF
+          )
+          curl -k -f -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${HOST1_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/${INVENTORY_ID}/hosts/"
+
+          # 4. ADD HOST 2 TO THE NEW INVENTORY
+          echo "Adding host '${HOST2_NAME}' to inventory ID ${INVENTORY_ID}"
+          HOST2_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${HOST2_NAME}",
+            "variables": "ansible_host: ${HOST2_IP}\nansible_connection: ssh"
+          }
+          EOF
+          )
+          curl -k -f -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${HOST2_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/${INVENTORY_ID}/hosts/"
+
+          echo "Successfully created inventory and added hosts."
+      restartPolicy: OnFailure

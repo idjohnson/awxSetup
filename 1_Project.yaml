@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-awx-project-job
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      containers:
+      - name: create-awx-project
+        # Using a general-purpose image to install the tools we need (curl and jq)
+        image: alpine:latest
+        env:
+        # --- Configuration for the Organization to find ---
+        - name: ORG_NAME
+          value: "Freshbrewed"
+
+        # --- Configuration for the Project to create ---
+        - name: PROJECT_NAME
+          value: "ansible-playbooks"
+        - name: PROJECT_SCM_URL
+          value: "https://github.com/idjohnson/ansible-playbooks.git"
+        - name: PROJECT_SCM_BRANCH
+          value: "main"
+
+        # --- AWX API Connection Details ---
+        - name: AWX_API_URL
+          value: "http://awx-service.default.svc:80"
+
+        - name: AWX_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-admin-password
+              key: password
+
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Exit on error, print commands
+          set -ex
+
+          echo "Installing dependencies..."
+          apk add --no-cache curl jq
+
+          # 1. FETCH ORGANIZATION ID
+          # Query the API for the organization by name and use jq to parse the JSON response,
+          # extracting the 'id' from the first result.
+          echo "Fetching ID for organization: ${ORG_NAME}"
+          ORG_ID=$(curl -k -f -s -u "admin:${AWX_ADMIN_PASSWORD}" "${AWX_API_URL}/api/v2/organizations/?name=${ORG_NAME}" | jq '.results[0].id')
+
+          # Verify that we got a valid ID.
+          if [ -z "$ORG_ID" ] || [ "$ORG_ID" == "null" ]; then
+            echo "Error: Could not find organization with name '${ORG_NAME}'"
+            exit 1
+          fi
+          echo "Found Organization ID: ${ORG_ID}"
+
+          # 2. CREATE PROJECT
+          # Prepare the JSON payload for the new project. Using a variable makes the curl command cleaner.
+          echo "Preparing to create project '${PROJECT_NAME}'..."
+          JSON_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${PROJECT_NAME}",
+            "organization": ${ORG_ID},
+            "scm_type": "git",
+            "scm_url": "${PROJECT_SCM_URL}",
+            "scm_branch": "${PROJECT_SCM_BRANCH}",
+            "scm_update_on_launch": true
+          }
+          EOF
+          )
+
+          # Send the POST request to create the project.
+          curl -k -f -X POST \
+            -u "admin:${AWX_ADMIN_PASSWORD}" \
+            -H "Content-Type: application/json" \
+            -d "${JSON_PAYLOAD}" \
+            "${AWX_API_URL}/api/v2/projects/"
+
+          echo "Successfully created project: ${PROJECT_NAME}"
+      restartPolicy: OnFailure

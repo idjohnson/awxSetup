@@ -1,0 +1,118 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: add-hosts-to-inventory-cluster1-job
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      containers:
+      - name: add-hosts-to-inventory
+        image: alpine:latest
+        env:
+        # --- Configuration for the Organization and Inventory to find ---
+        - name: ORG_NAME
+          value: "Freshbrewed"
+        - name: INVENTORY_NAME
+          value: "Kubernetes-Cluster1"
+
+        # --- Configuration for Host 1 ---
+        - name: HOST1_NAME
+          value: "builder-hp-elitebook-745-g5"
+        - name: HOST1_IP
+          value: "192.168.1.34"
+
+        # --- Configuration for Host 2 ---
+        - name: HOST2_NAME
+          value: "builder-hp-elitebook-850-g1"
+        - name: HOST2_IP
+          value: "192.168.1.33"
+
+        # --- Configuration for Host 3 ---
+        - name: HOST3_NAME
+          value: "builder-HP-EliteBook-850-G2"
+        - name: HOST3_IP
+          value: "192.168.1.215"
+
+        # --- Configuration for Host 4 ---
+        - name: HOST4_NAME
+          value: "hp-hp-elitebook-850-g2"
+        - name: HOST4_IP
+          value: "192.168.1.57"
+
+        # --- AWX API Connection Details ---
+        - name: AWX_API_URL
+          value: "http://awx-service.default.svc:80"
+        - name: AWX_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-admin-password
+              key: password
+
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Exit on error, print commands
+          set -ex
+
+          echo "Installing dependencies..."
+          apk add --no-cache curl jq
+
+          # 1. FETCH INVENTORY ID
+          # We query by both inventory name and organization name to ensure we get the correct one.
+          echo "Fetching ID for inventory '${INVENTORY_NAME}' in organization '${ORG_NAME}'"
+          INVENTORY_ID=$(curl -k -f -s -u "admin:${AWX_ADMIN_PASSWORD}" "${AWX_API_URL}/api/v2/inventories/?name=${INVENTORY_NAME}&organization__name=${ORG_NAME}" | jq '.results[0].id')
+
+          if [ -z "$INVENTORY_ID" ] || [ "$INVENTORY_ID" == "null" ]; then
+            echo "Error: Could not find inventory named '${INVENTORY_NAME}' in organization '${ORG_NAME}'"
+            exit 1
+          fi
+          echo "Found Inventory ID: ${INVENTORY_ID}"
+
+          # 2. ADD HOST 1 TO THE INVENTORY
+          echo "Adding host '${HOST1_NAME}' to inventory ID ${INVENTORY_ID}"
+          HOST1_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${HOST1_NAME}",
+            "variables": "ansible_host: ${HOST1_IP}\nansible_connection: ssh"
+          }
+          EOF
+          )
+          curl -k -f -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${HOST1_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/${INVENTORY_ID}/hosts/"
+
+          # 3. ADD HOST 2 TO THE INVENTORY
+          echo "Adding host '${HOST2_NAME}' to inventory ID ${INVENTORY_ID}"
+          HOST2_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${HOST2_NAME}",
+            "variables": "ansible_host: ${HOST2_IP}\nansible_connection: ssh"
+          }
+          EOF
+          )
+          curl -k -f -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${HOST2_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/${INVENTORY_ID}/hosts/"
+
+          # 4. ADD HOST 3 TO THE INVENTORY
+          echo "Adding host '${HOST3_NAME}' to inventory ID ${INVENTORY_ID}"
+          HOST3_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${HOST3_NAME}",
+            "variables": "ansible_host: ${HOST3_IP}\nansible_connection: ssh"
+          }
+          EOF
+          )
+          curl -k -f -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${HOST3_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/${INVENTORY_ID}/hosts/"
+
+          # 5. ADD HOST 4 TO THE INVENTORY
+          echo "Adding host '${HOST4_NAME}' to inventory ID ${INVENTORY_ID}"
+          HOST4_PAYLOAD=$(cat <<EOF
+          {
+            "name": "${HOST4_NAME}",
+            "variables": "ansible_host: ${HOST4_IP}\nansible_connection: ssh"
+          }
+          EOF
+          )
+          curl -k -f -X POST -u "admin:${AWX_ADMIN_PASSWORD}" -H "Content-Type: application/json" -d "${HOST4_PAYLOAD}" "${AWX_API_URL}/api/v2/inventories/${INVENTORY_ID}/hosts/"
+
+
+          echo "Successfully added hosts to inventory '${INVENTORY_NAME}'."
+      restartPolicy: OnFailure

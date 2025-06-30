@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-awx-organization-job
+spec:
+  # The number of retries before considering a Job as failed
+  backoffLimit: 4
+  template:
+    spec:
+      containers:
+      - name: create-awx-org
+        # A minimal container image with curl pre-installed
+        image: curlimages/curl:latest
+        env:
+        # The name for the new AWX organization.
+        # IMPORTANT: Change this value to the desired organization name.
+        - name: ORG_NAME
+          value: "Freshbrewed"
+
+        # The URL for your AWX API endpoint.
+        # IMPORTANT: Change this to point to your AWX instance's service URL.
+        - name: AWX_API_URL
+          value: "http://awx-service.default.svc:80"
+
+        # This pulls the admin password from the specified secret.
+        # The secret 'awx-admin-password' with key 'password' must exist in the same namespace.
+        - name: AWX_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: awx-admin-password
+              key: password
+
+        # The command to execute. It uses curl to make a REST API call.
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Exit immediately if a command exits with a non-zero status.
+          set -e
+          # Print each command to stdout before executing it.
+          set -x
+
+          echo "Attempting to create organization: ${ORG_NAME} in AWX at ${AWX_API_URL}"
+
+          # Use curl to send a POST request to the AWX API to create a new organization.
+          # -k: Allows insecure server connections (e.g., self-signed certs). Remove if not needed.
+          # -f: Fail with an error code on HTTP server errors (like 4xx or 5xx).
+          # -u: Basic authentication with the admin user and password from the secret.
+          # -H: Sets the Content-Type header to application/json.
+          # -d: The JSON data payload for creating the organization.
+          curl -k -f -X POST \
+            -u "admin:${AWX_ADMIN_PASSWORD}" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"${ORG_NAME}\", \"description\": \"Organization created by Kubernetes Job\"}" \
+            "${AWX_API_URL}/api/v2/organizations/"
+
+          echo "Successfully created organization: ${ORG_NAME}"
+      restartPolicy: OnFailure
